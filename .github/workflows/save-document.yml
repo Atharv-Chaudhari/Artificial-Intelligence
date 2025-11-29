@@ -2,7 +2,7 @@ name: Save Document via Issue
 
 on:
   issues:
-    types: [opened, labeled]
+    types: [opened]
 
 jobs:
   save-document:
