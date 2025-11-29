@@ -3102,11 +3102,15 @@ class KnowledgeBase {
                 const isPublic = !repo.private;
                 
                 if (isPublic) {
-                    this.showNotification('✅ Connected! Public repository - no token needed', 'success');
+                    if (this.githubConfig.token) {
+                        this.showNotification('✅ Connected! Public repository with token', 'success');
+                    } else {
+                        this.showNotification('✅ Connected! Public repository - manual issue creation will be used', 'success');
+                    }
                 } else if (this.githubConfig.token) {
                     this.showNotification('✅ Connected! Private repository - using token', 'success');
                 } else {
-                    this.showNotification('⚠️ Private repository detected - token recommended', 'info');
+                    this.showNotification('⚠️ Private repository detected - token required for auto-sync', 'warning');
                 }
                 
                 // Update GitHub status indicator
@@ -3115,7 +3119,11 @@ class KnowledgeBase {
             } else if (response.status === 404) {
                 this.showNotification('❌ Repository not found. Check owner and repository name.', 'error');
             } else if (response.status === 401 || response.status === 403) {
-                this.showNotification('❌ Authentication failed. Check your token or repository permissions.', 'error');
+                if (this.githubConfig.token) {
+                    this.showNotification('❌ Token invalid. Manual issue creation will be used.', 'warning');
+                } else {
+                    this.showNotification('⚠️ No token provided. Manual issue creation will be used.', 'info');
+                }
             } else {
                 this.showNotification(`❌ Connection failed: ${response.status} ${response.statusText}`, 'error');
             }
@@ -3125,6 +3133,31 @@ class KnowledgeBase {
         }
     }
 
+    // Manual GitHub Issue Creation (No auth required)
+    createManualGitHubIssue(filename, content) {
+        const issueTitle = `[KB-SAVE] ${filename}`;
+        
+        // Create a URL that pre-fills the new issue form
+        const issueUrl = `https://github.com/${this.githubConfig.owner}/${this.githubConfig.repo}/issues/new?` + 
+            `title=${encodeURIComponent(issueTitle)}&` +
+            `body=${encodeURIComponent(content)}&` +
+            `labels=kb-save-doc,automated`;
+        
+        // Open in new tab - user manually submits
+        window.open(issueUrl, '_blank');
+        this.showNotification('📝 GitHub issue form opened. Please review and submit manually.', 'info');
+
+        // Track manual commit
+        const commits = JSON.parse(localStorage.getItem('kb_github_commits') || '[]');
+        commits.unshift({
+            filename,
+            message: 'Manual issue creation',
+            timestamp: new Date().toISOString(),
+            status: 'manual_pending',
+            issueUrl: issueUrl
+        });
+        localStorage.setItem('kb_github_commits', JSON.stringify(commits.slice(0, 50)));
+    }
 
     async commitToGitHub(filename, content, message) {
         if (!this.githubConfig.owner || !this.githubConfig.repo) {
@@ -3134,23 +3167,26 @@ class KnowledgeBase {
 
         try {
             const issueTitle = `[KB-SAVE] ${filename}`;
-            const issueBody = content;
-
-            console.log('Creating GitHub issue:', {
+            
+            console.log('Attempting GitHub issue creation:', {
                 owner: this.githubConfig.owner,
                 repo: this.githubConfig.repo,
-                title: issueTitle
+                title: issueTitle,
+                hasToken: !!this.githubConfig.token
             });
+
+            // For public repos without token, use the manual method
+            if (!this.githubConfig.token) {
+                this.showNotification('Using manual GitHub sync (no token provided)', 'info');
+                this.createManualGitHubIssue(filename, content);
+                return;
+            }
 
             const headers = {
                 'Accept': 'application/vnd.github.v3+json',
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/json',
+                'Authorization': `token ${this.githubConfig.token}`
             };
-
-            // Add authorization only if token exists
-            if (this.githubConfig.token) {
-                headers['Authorization'] = `token ${this.githubConfig.token}`;
-            }
 
             const response = await fetch(
                 `https://api.github.com/repos/${this.githubConfig.owner}/${this.githubConfig.repo}/issues`,
@@ -3159,7 +3195,7 @@ class KnowledgeBase {
                     headers: headers,
                     body: JSON.stringify({
                         title: issueTitle,
-                        body: issueBody,
+                        body: content,
                         labels: ['kb-save-doc', 'automated']
                     })
                 }
@@ -3187,18 +3223,19 @@ class KnowledgeBase {
                 console.error('GitHub API error:', errorData);
                 
                 if (response.status === 401) {
-                    this.showNotification('GitHub authentication failed. Check your token.', 'error');
+                    this.showNotification('GitHub token invalid. Using manual method instead.', 'warning');
+                    this.createManualGitHubIssue(filename, content);
                 } else if (response.status === 403) {
-                    this.showNotification('GitHub access forbidden. Check repository permissions.', 'error');
-                } else if (response.status === 404) {
-                    this.showNotification('Repository not found. Check owner and repository name.', 'error');
+                    this.showNotification('GitHub access forbidden. Using manual method.', 'warning');
+                    this.createManualGitHubIssue(filename, content);
                 } else {
                     this.showNotification(`GitHub error: ${errorData.message || response.statusText}`, 'error');
                 }
             }
         } catch (error) {
             console.error('GitHub save error:', error);
-            this.showNotification('Failed to save to GitHub: ' + error.message, 'error');
+            this.showNotification('Failed to save to GitHub, using manual method: ' + error.message, 'warning');
+            this.createManualGitHubIssue(filename, content);
         }
     }
 
@@ -3214,18 +3251,8 @@ class KnowledgeBase {
         if (!doc) return;
 
         const filename = doc.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-        const title = `[KB-SAVE] ${filename}`;
-        
-        // Create a URL that pre-fills the new issue form
-        const issueUrl = `https://github.com/${this.githubConfig.owner}/${this.githubConfig.repo}/issues/new?` + 
-            `title=${encodeURIComponent(title)}&` +
-            `body=${encodeURIComponent(doc.content)}&` +
-            `labels=kb-save-doc,automated`;
-        
-        // Open in new tab - user manually submits
-        window.open(issueUrl, '_blank');
-        this.showNotification('Please submit the pre-filled issue form in the new tab', 'info');
-    }
+        this.createManualGitHubIssue(filename, doc.content);
+    }    
 
     // ===== SETTINGS MANAGEMENT =====
     loadSettings() {
